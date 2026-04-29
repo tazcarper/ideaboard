@@ -22,6 +22,7 @@ export function StickyNote({ note }: Props) {
     startY: number;
     originX: number;
     originY: number;
+    scaleAtStart: number;
   } | null>(null);
 
   const textTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -49,6 +50,7 @@ export function StickyNote({ note }: Props) {
       startY: e.clientY,
       originX: note.x,
       originY: note.y,
+      scaleAtStart: useBoardStore.getState().scale,
     };
     setDraggingNoteId(note.id);
   }
@@ -56,8 +58,8 @@ export function StickyNote({ note }: Props) {
   function handleHeaderPointerMove(e: React.PointerEvent<HTMLDivElement>) {
     const ds = dragState.current;
     if (!ds || ds.pointerId !== e.pointerId) return;
-    const dx = e.clientX - ds.startX;
-    const dy = e.clientY - ds.startY;
+    const dx = (e.clientX - ds.startX) / ds.scaleAtStart;
+    const dy = (e.clientY - ds.startY) / ds.scaleAtStart;
     patchNote(note.id, { x: ds.originX + dx, y: ds.originY + dy });
   }
 

@@ -1,17 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Board, Note, Point, Stroke } from "@/types/board";
-import { useBoardStore } from "./useBoardStore";
+import { MAX_SCALE, MIN_SCALE, useBoardStore } from "./useBoardStore";
 import { Toolbar } from "./Toolbar";
 import { BoardCanvas } from "./BoardCanvas";
 import { NoteLayer } from "./NoteLayer";
+import { ZoomControls } from "./ZoomControls";
 import { deleteStroke, insertNote, insertStroke } from "@/lib/db";
 
 const WORLD_W = 4000;
 const WORLD_H = 3000;
 const NOTE_W = 200;
 const NOTE_H = 200;
+const ZOOM_STEP = 1.25;
+const FIT_PADDING = 80;
 
 type Props = {
   board: Board;
@@ -29,14 +32,17 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
   const upsertNote = useBoardStore((s) => s.upsertNote);
   const removeStroke = useBoardStore((s) => s.removeStroke);
   const strokes = useBoardStore((s) => s.strokes);
+  const scale = useBoardStore((s) => s.scale);
+  const setScale = useBoardStore((s) => s.setScale);
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<HTMLDivElement | null>(null);
   const drawingRef = useRef<{ pointerId: number } | null>(null);
+  const pendingScrollRef = useRef<{ x: number; y: number } | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    init(board.id, initialNotes, initialStrokes);
+    init(board.id, "", initialNotes, initialStrokes);
   }, [board.id, initialNotes, initialStrokes, init]);
 
   useEffect(() => {
@@ -48,29 +54,174 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
     });
   }, []);
 
+  useLayoutEffect(() => {
+    const pending = pendingScrollRef.current;
+    if (!pending) return;
+    const scroller = scrollerRef.current;
+    if (scroller) {
+      scroller.scrollLeft = pending.x;
+      scroller.scrollTop = pending.y;
+    }
+    pendingScrollRef.current = null;
+  }, [scale]);
+
   function getWorldCoords(e: React.PointerEvent<HTMLDivElement>): Point {
     const rect = worldRef.current!.getBoundingClientRect();
-    return [e.clientX - rect.left, e.clientY - rect.top];
+    const s = useBoardStore.getState().scale;
+    return [(e.clientX - rect.left) / s, (e.clientY - rect.top) / s];
   }
 
   function eraseAt(point: Point) {
     const list = Object.values(strokes);
     const px = point[0];
     const py = point[1];
-    for (const s of list) {
-      const threshold = s.width + 8;
+    const s = useBoardStore.getState().scale;
+    for (const stroke of list) {
+      const threshold = stroke.width + 8 / s;
       const t2 = threshold * threshold;
-      for (const [x, y] of s.points) {
+      for (const [x, y] of stroke.points) {
         const dx = x - px;
         const dy = y - py;
         if (dx * dx + dy * dy <= t2) {
-          removeStroke(s.id);
-          void deleteStroke(s.id);
+          removeStroke(stroke.id);
+          void deleteStroke(stroke.id);
           return;
         }
       }
     }
   }
+
+  function zoomAt(clientX: number, clientY: number, nextScale: number) {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const rect = scroller.getBoundingClientRect();
+    const mx = clientX - rect.left;
+    const my = clientY - rect.top;
+    const current = useBoardStore.getState().scale;
+    const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, nextScale));
+    if (next === current) return;
+    const worldX = (scroller.scrollLeft + mx) / current;
+    const worldY = (scroller.scrollTop + my) / current;
+    pendingScrollRef.current = {
+      x: worldX * next - mx,
+      y: worldY * next - my,
+    };
+    setScale(next);
+  }
+
+  function zoomAtCenter(nextScale: number) {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const rect = scroller.getBoundingClientRect();
+    zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, nextScale);
+  }
+
+  function resetZoom() {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const current = useBoardStore.getState().scale;
+    const targetX = WORLD_W / 2 - scroller.clientWidth / 2;
+    const targetY = WORLD_H / 2 - scroller.clientHeight / 2;
+    if (current !== 1) {
+      pendingScrollRef.current = { x: targetX, y: targetY };
+      setScale(1);
+    } else {
+      scroller.scrollLeft = targetX;
+      scroller.scrollTop = targetY;
+    }
+  }
+
+  function fitToContent() {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const state = useBoardStore.getState();
+    const allNotes = Object.values(state.notes);
+    const allStrokes = Object.values(state.strokes);
+    if (allNotes.length === 0 && allStrokes.length === 0) {
+      resetZoom();
+      return;
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const n of allNotes) {
+      if (n.x < minX) minX = n.x;
+      if (n.y < minY) minY = n.y;
+      if (n.x + n.width > maxX) maxX = n.x + n.width;
+      if (n.y + n.height > maxY) maxY = n.y + n.height;
+    }
+    for (const s of allStrokes) {
+      for (const [x, y] of s.points) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    const bboxW = maxX - minX + FIT_PADDING * 2;
+    const bboxH = maxY - minY + FIT_PADDING * 2;
+    const fitScale = Math.min(scroller.clientWidth / bboxW, scroller.clientHeight / bboxH, 1);
+    const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, fitScale));
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const target = {
+      x: cx * next - scroller.clientWidth / 2,
+      y: cy * next - scroller.clientHeight / 2,
+    };
+    if (next === state.scale) {
+      scroller.scrollLeft = target.x;
+      scroller.scrollTop = target.y;
+    } else {
+      pendingScrollRef.current = target;
+      setScale(next);
+    }
+  }
+
+  // Wheel zoom — attached once via addEventListener so we can preventDefault.
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const handler = (e: WheelEvent) => {
+      // Trackpad pinch is ctrlKey (synthetic); Mac Cmd+wheel is metaKey.
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const state = useBoardStore.getState();
+      // Don't zoom mid-drag/draw.
+      if (state.pendingStroke || state.draggingNoteId) return;
+      // Normalize deltaMode: line=1, page=2.
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= 16;
+      else if (e.deltaMode === 2) dy *= scroller.clientHeight;
+      const factor = Math.exp(-dy * 0.0015);
+      zoomAt(e.clientX, e.clientY, state.scale * factor);
+    };
+    scroller.addEventListener("wheel", handler, { passive: false });
+    return () => scroller.removeEventListener("wheel", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keyboard zoom shortcuts (Cmd/Ctrl + =/-/0).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement) return;
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        zoomAtCenter(useBoardStore.getState().scale * ZOOM_STEP);
+      } else if (e.key === "-") {
+        e.preventDefault();
+        zoomAtCenter(useBoardStore.getState().scale / ZOOM_STEP);
+      } else if (e.key === "0") {
+        e.preventDefault();
+        resetZoom();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
     if (e.button !== 0) return;
@@ -168,27 +319,38 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
         className="relative flex-1 overflow-auto"
         style={{ background: "#f4f4f5" }}
       >
-        <div
-          ref={worldRef}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
-          className="relative"
-          style={{
-            width: WORLD_W,
-            height: WORLD_H,
-            backgroundImage:
-              "radial-gradient(circle at 20px 20px, rgba(0,0,0,0.06) 1px, transparent 1px)",
-            backgroundSize: "40px 40px",
-            cursor: cursorStyle,
-            touchAction: "none",
-          }}
-        >
-          <BoardCanvas width={WORLD_W} height={WORLD_H} />
-          <NoteLayer />
+        <div style={{ width: WORLD_W * scale, height: WORLD_H * scale }}>
+          <div
+            ref={worldRef}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            className="relative"
+            style={{
+              width: WORLD_W,
+              height: WORLD_H,
+              transformOrigin: "0 0",
+              transform: `scale(${scale})`,
+              backgroundImage:
+                "radial-gradient(circle at 20px 20px, rgba(0,0,0,0.06) 1px, transparent 1px)",
+              backgroundSize: "40px 40px",
+              cursor: cursorStyle,
+              touchAction: "none",
+            }}
+          >
+            <BoardCanvas width={WORLD_W} height={WORLD_H} />
+            <NoteLayer />
+          </div>
         </div>
       </div>
+
+      <ZoomControls
+        onZoomIn={() => zoomAtCenter(useBoardStore.getState().scale * ZOOM_STEP)}
+        onZoomOut={() => zoomAtCenter(useBoardStore.getState().scale / ZOOM_STEP)}
+        onReset={resetZoom}
+        onFit={fitToContent}
+      />
     </div>
   );
 }
