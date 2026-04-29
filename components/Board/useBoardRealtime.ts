@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 import { useBoardStore } from "./useBoardStore";
-import type { Note, Point, Stroke } from "@/types/board";
+import type { Note, NoteVote, Point, Stroke } from "@/types/board";
 
 const supabase = createClient();
 
@@ -30,6 +30,8 @@ export function useBoardRealtime(boardId: string, identity: Identity | null) {
   const removeStroke = useBoardStore((s) => s.removeStroke);
   const upsertRemotePendingStroke = useBoardStore((s) => s.upsertRemotePendingStroke);
   const removeRemotePendingStroke = useBoardStore((s) => s.removeRemotePendingStroke);
+  const applyVote = useBoardStore((s) => s.applyVote);
+  const clearVote = useBoardStore((s) => s.clearVote);
 
   const [remoteCursors, setRemoteCursors] = useState<Record<string, RemoteCursor>>({});
   const channelRef = useRef<RealtimeChannel | null>(null);
@@ -92,6 +94,37 @@ export function useBoardRealtime(boardId: string, identity: Identity | null) {
           removeStroke(s.id);
           removeRemotePendingStroke(s.id);
         }
+      }
+    );
+
+    channel.on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "note_votes", filter: `board_id=eq.${boardId}` },
+      (payload) => {
+        const v = payload.new as NoteVote;
+        if (v.user_id === identity.clientId) return;
+        applyVote(v);
+      }
+    );
+
+    channel.on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "note_votes", filter: `board_id=eq.${boardId}` },
+      (payload) => {
+        const v = payload.new as NoteVote;
+        if (v.user_id === identity.clientId) return;
+        applyVote(v);
+      }
+    );
+
+    channel.on(
+      "postgres_changes",
+      { event: "DELETE", schema: "public", table: "note_votes", filter: `board_id=eq.${boardId}` },
+      (payload) => {
+        const v = payload.old as Partial<NoteVote>;
+        if (!v?.note_id || !v?.user_id) return;
+        if (v.user_id === identity.clientId) return;
+        clearVote(v.note_id, v.user_id);
       }
     );
 
@@ -163,6 +196,8 @@ export function useBoardRealtime(boardId: string, identity: Identity | null) {
     removeStroke,
     upsertRemotePendingStroke,
     removeRemotePendingStroke,
+    applyVote,
+    clearVote,
   ]);
 
   const broadcastCursor = useCallback(

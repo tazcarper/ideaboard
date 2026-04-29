@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { Board, Note, Point, Stroke } from "@/types/board";
+import type { Board, Note, NoteVote, Point, Stroke } from "@/types/board";
 import { MAX_SCALE, MIN_SCALE, useBoardStore } from "./useBoardStore";
 import { Toolbar } from "./Toolbar";
 import { BoardCanvas } from "./BoardCanvas";
@@ -9,7 +9,7 @@ import { NoteLayer } from "./NoteLayer";
 import { PresenceCursors } from "./PresenceCursors";
 import { ZoomControls } from "./ZoomControls";
 import { useBoardRealtime } from "./useBoardRealtime";
-import { deleteStroke, insertNote, insertStroke } from "@/lib/db";
+import { deleteNote, deleteStroke, insertNote, insertStroke } from "@/lib/db";
 import { identitySource } from "@/lib/identity";
 
 const WORLD_W = 4000;
@@ -23,9 +23,10 @@ type Props = {
   board: Board;
   initialNotes: Note[];
   initialStrokes: Stroke[];
+  initialVotes: NoteVote[];
 };
 
-export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
+export function BoardSurface({ board, initialNotes, initialStrokes, initialVotes }: Props) {
   const init = useBoardStore((s) => s.init);
   const tool = useBoardStore((s) => s.tool);
   const noteColor = useBoardStore((s) => s.noteColor);
@@ -34,9 +35,14 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
   const finishStroke = useBoardStore((s) => s.finishStroke);
   const upsertNote = useBoardStore((s) => s.upsertNote);
   const removeStroke = useBoardStore((s) => s.removeStroke);
+  const removeNote = useBoardStore((s) => s.removeNote);
   const strokes = useBoardStore((s) => s.strokes);
   const scale = useBoardStore((s) => s.scale);
   const setScale = useBoardStore((s) => s.setScale);
+  const marquee = useBoardStore((s) => s.marquee);
+  const setMarquee = useBoardStore((s) => s.setMarquee);
+  const setSelection = useBoardStore((s) => s.setSelection);
+  const clearSelection = useBoardStore((s) => s.clearSelection);
 
   const identity = useSyncExternalStore(
     identitySource.subscribe,
@@ -49,13 +55,14 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<HTMLDivElement | null>(null);
   const drawingRef = useRef<{ pointerId: number } | null>(null);
+  const marqueeRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null);
   const pendingScrollRef = useRef<{ x: number; y: number } | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!identity) return;
-    init(board.id, identity.clientId, initialNotes, initialStrokes);
-  }, [board.id, identity, initialNotes, initialStrokes, init]);
+    init(board.id, identity.clientId, initialNotes, initialStrokes, initialVotes);
+  }, [board.id, identity, initialNotes, initialStrokes, initialVotes, init]);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -235,6 +242,24 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Delete / Backspace removes selected notes (unless typing in a textarea/input).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const active = document.activeElement;
+      if (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement) return;
+      const ids = useBoardStore.getState().selectedNoteIds;
+      if (ids.length === 0) return;
+      e.preventDefault();
+      for (const id of ids) {
+        removeNote(id);
+        void deleteNote(id);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [removeNote]);
+
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
     if (e.button !== 0) return;
     const point = getWorldCoords(e);
@@ -274,6 +299,15 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
       eraseAt(point);
       return;
     }
+
+    if (tool === "select") {
+      e.preventDefault();
+      (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+      marqueeRef.current = { pointerId: e.pointerId, startX: point[0], startY: point[1] };
+      clearSelection();
+      setMarquee({ x: point[0], y: point[1], w: 0, h: 0 });
+      return;
+    }
   }
 
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
@@ -288,6 +322,24 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
     }
     if (tool === "eraser" && (e.buttons & 1) === 1) {
       eraseAt(point);
+      return;
+    }
+    if (tool === "select" && marqueeRef.current?.pointerId === e.pointerId) {
+      const startX = marqueeRef.current.startX;
+      const startY = marqueeRef.current.startY;
+      const x = Math.min(startX, point[0]);
+      const y = Math.min(startY, point[1]);
+      const w = Math.abs(point[0] - startX);
+      const h = Math.abs(point[1] - startY);
+      setMarquee({ x, y, w, h });
+      const ids: string[] = [];
+      const notes = useBoardStore.getState().notes;
+      for (const n of Object.values(notes)) {
+        if (n.x < x + w && n.x + n.width > x && n.y < y + h && n.y + n.height > y) {
+          ids.push(n.id);
+        }
+      }
+      setSelection(ids);
     }
   }
 
@@ -300,6 +352,12 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
         void insertStroke(finished);
         broadcastStrokeEnd(finished.id);
       }
+      return;
+    }
+    if (tool === "select" && marqueeRef.current?.pointerId === e.pointerId) {
+      (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+      marqueeRef.current = null;
+      setMarquee(null);
     }
   }
 
@@ -373,6 +431,17 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
           >
             <BoardCanvas width={WORLD_W} height={WORLD_H} />
             <NoteLayer />
+            {marquee ? (
+              <div
+                className="pointer-events-none absolute z-20 border border-blue-500 bg-blue-500/10"
+                style={{
+                  left: marquee.x,
+                  top: marquee.y,
+                  width: marquee.w,
+                  height: marquee.h,
+                }}
+              />
+            ) : null}
             <PresenceCursors cursors={remoteCursors} />
           </div>
         </div>

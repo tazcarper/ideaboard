@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import type { Board, Note, Stroke } from "@/types/board";
+import type { Board, Note, NoteVote, Stroke } from "@/types/board";
 import { BoardSurface } from "@/components/Board/BoardSurface";
 
 export default async function BoardPage({
@@ -21,9 +21,10 @@ export default async function BoardPage({
     notFound();
   }
 
-  const [{ data: notes }, { data: strokes }] = await Promise.all([
+  const [{ data: notes }, { data: strokes }, { data: votes }] = await Promise.all([
     supabase.from("notes").select("*").eq("board_id", board.id).order("z_index"),
     supabase.from("strokes").select("*").eq("board_id", board.id).order("created_at"),
+    supabase.from("note_votes").select("*").eq("board_id", board.id),
   ]);
 
   return (
@@ -31,6 +32,7 @@ export default async function BoardPage({
       board={board}
       initialNotes={(notes ?? []) as Note[]}
       initialStrokes={(strokes ?? []) as Stroke[]}
+      initialVotes={(votes ?? []) as NoteVote[]}
     />
   );
 }
