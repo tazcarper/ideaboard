@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Board, Note, Point, Stroke } from "@/types/board";
 import { MAX_SCALE, MIN_SCALE, useBoardStore } from "./useBoardStore";
 import { Toolbar } from "./Toolbar";
 import { BoardCanvas } from "./BoardCanvas";
 import { NoteLayer } from "./NoteLayer";
+import { PresenceCursors } from "./PresenceCursors";
 import { ZoomControls } from "./ZoomControls";
+import { useBoardRealtime } from "./useBoardRealtime";
 import { deleteStroke, insertNote, insertStroke } from "@/lib/db";
+import { identitySource } from "@/lib/identity";
 
 const WORLD_W = 4000;
 const WORLD_H = 3000;
@@ -35,6 +38,14 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
   const scale = useBoardStore((s) => s.scale);
   const setScale = useBoardStore((s) => s.setScale);
 
+  const identity = useSyncExternalStore(
+    identitySource.subscribe,
+    identitySource.getSnapshot,
+    identitySource.getServerSnapshot
+  );
+  const { remoteCursors, broadcastCursor, broadcastStrokePoint, broadcastStrokeEnd } =
+    useBoardRealtime(board.id, identity);
+
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<HTMLDivElement | null>(null);
   const drawingRef = useRef<{ pointerId: number } | null>(null);
@@ -42,8 +53,9 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    init(board.id, "", initialNotes, initialStrokes);
-  }, [board.id, initialNotes, initialStrokes, init]);
+    if (!identity) return;
+    init(board.id, identity.clientId, initialNotes, initialStrokes);
+  }, [board.id, identity, initialNotes, initialStrokes, init]);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -233,10 +245,13 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
       startStroke(id, point);
       (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
       drawingRef.current = { pointerId: e.pointerId };
+      const pending = useBoardStore.getState().pendingStroke;
+      if (pending) broadcastStrokePoint(pending);
       return;
     }
 
     if (tool === "note") {
+      if (!identity) return;
       const note: Note = {
         id: crypto.randomUUID(),
         board_id: board.id,
@@ -248,7 +263,7 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
         text: "",
         z_index: Date.now() % 1_000_000,
         updated_at: new Date().toISOString(),
-        updated_by: null,
+        updated_by: identity.clientId,
       };
       upsertNote(note);
       void insertNote(note);
@@ -262,12 +277,17 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
   }
 
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const point = getWorldCoords(e);
+    broadcastCursor(point);
+
     if (tool === "pen" && drawingRef.current?.pointerId === e.pointerId) {
-      appendStrokePoint(getWorldCoords(e));
+      appendStrokePoint(point);
+      const pending = useBoardStore.getState().pendingStroke;
+      if (pending) broadcastStrokePoint(pending);
       return;
     }
     if (tool === "eraser" && (e.buttons & 1) === 1) {
-      eraseAt(getWorldCoords(e));
+      eraseAt(point);
     }
   }
 
@@ -278,6 +298,7 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
       const finished = finishStroke();
       if (finished && finished.points.length >= 1) {
         void insertStroke(finished);
+        broadcastStrokeEnd(finished.id);
       }
     }
   }
@@ -300,12 +321,23 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
           <span className="font-semibold text-zinc-900">IdeaBoard</span>
           <span className="text-sm text-zinc-500">/b/{board.slug}</span>
         </div>
-        <button
-          onClick={copyLink}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-1 text-sm hover:bg-zinc-50"
-        >
-          {copied ? "Copied!" : "Copy share link"}
-        </button>
+        <div className="flex items-center gap-3">
+          {identity ? (
+            <span className="flex items-center gap-1.5 text-sm text-zinc-600">
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: identity.color }}
+              />
+              {identity.name}
+            </span>
+          ) : null}
+          <button
+            onClick={copyLink}
+            className="rounded-md border border-zinc-300 bg-white px-3 py-1 text-sm hover:bg-zinc-50"
+          >
+            {copied ? "Copied!" : "Copy share link"}
+          </button>
+        </div>
       </header>
 
       <div className="pointer-events-none absolute left-1/2 top-14 z-30 -translate-x-1/2">
@@ -341,6 +373,7 @@ export function BoardSurface({ board, initialNotes, initialStrokes }: Props) {
           >
             <BoardCanvas width={WORLD_W} height={WORLD_H} />
             <NoteLayer />
+            <PresenceCursors cursors={remoteCursors} />
           </div>
         </div>
       </div>
