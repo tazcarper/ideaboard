@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# claude code (per-user settings; agents and shared settings are tracked)
+.claude/settings.local.json
