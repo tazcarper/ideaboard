@@ -13,9 +13,15 @@ export function CreateBoardButton() {
     setError(null);
     try {
       const res = await fetch("/api/boards", { method: "POST" });
+      if (res.status === 401) {
+        router.push("/?next=/");
+        return;
+      }
       const data = await res.json();
       if (!res.ok || !data.slug) {
-        throw new Error(data.error ?? "Failed to create board");
+        throw new Error(
+          res.status === 429 ? "Too many boards in the last hour. Try again later." : data.error ?? "Failed to create board",
+        );
       }
 
       try {

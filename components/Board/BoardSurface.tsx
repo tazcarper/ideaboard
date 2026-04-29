@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Board, Note, NoteVote, Point, Stroke } from "@/types/board";
 import { MAX_SCALE, MIN_SCALE, useBoardStore } from "./useBoardStore";
 import { Toolbar } from "./Toolbar";
@@ -9,8 +9,9 @@ import { NoteLayer } from "./NoteLayer";
 import { PresenceCursors } from "./PresenceCursors";
 import { ZoomControls } from "./ZoomControls";
 import { useBoardRealtime } from "./useBoardRealtime";
+import { UserMenu } from "@/components/UserMenu";
 import { deleteNote, deleteStroke, insertNote, insertStroke } from "@/lib/db";
-import { identitySource } from "@/lib/identity";
+import { colorForUser, type Identity } from "@/lib/identity";
 
 const WORLD_W = 4000;
 const WORLD_H = 3000;
@@ -21,12 +22,25 @@ const FIT_PADDING = 80;
 
 type Props = {
   board: Board;
+  userId: string;
+  userName: string | null;
+  userEmail: string | null;
+  userAvatarUrl: string | null;
   initialNotes: Note[];
   initialStrokes: Stroke[];
   initialVotes: NoteVote[];
 };
 
-export function BoardSurface({ board, initialNotes, initialStrokes, initialVotes }: Props) {
+export function BoardSurface({
+  board,
+  userId,
+  userName,
+  userEmail,
+  userAvatarUrl,
+  initialNotes,
+  initialStrokes,
+  initialVotes,
+}: Props) {
   const init = useBoardStore((s) => s.init);
   const tool = useBoardStore((s) => s.tool);
   const noteColor = useBoardStore((s) => s.noteColor);
@@ -44,11 +58,15 @@ export function BoardSurface({ board, initialNotes, initialStrokes, initialVotes
   const setSelection = useBoardStore((s) => s.setSelection);
   const clearSelection = useBoardStore((s) => s.clearSelection);
 
-  const identity = useSyncExternalStore(
-    identitySource.subscribe,
-    identitySource.getSnapshot,
-    identitySource.getServerSnapshot
+  const identity = useMemo<Identity>(
+    () => ({
+      clientId: userId,
+      name: userName ?? userEmail ?? "Friend",
+      color: colorForUser(userId),
+    }),
+    [userId, userName, userEmail],
   );
+
   const { remoteCursors, broadcastCursor, broadcastStrokePoint, broadcastStrokeEnd } =
     useBoardRealtime(board.id, identity);
 
@@ -60,9 +78,8 @@ export function BoardSurface({ board, initialNotes, initialStrokes, initialVotes
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!identity) return;
-    init(board.id, identity.clientId, initialNotes, initialStrokes, initialVotes);
-  }, [board.id, identity, initialNotes, initialStrokes, initialVotes, init]);
+    init(board.id, userId, initialNotes, initialStrokes, initialVotes);
+  }, [board.id, userId, initialNotes, initialStrokes, initialVotes, init]);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -276,7 +293,6 @@ export function BoardSurface({ board, initialNotes, initialStrokes, initialVotes
     }
 
     if (tool === "note") {
-      if (!identity) return;
       const note: Note = {
         id: crypto.randomUUID(),
         board_id: board.id,
@@ -288,7 +304,7 @@ export function BoardSurface({ board, initialNotes, initialStrokes, initialVotes
         text: "",
         z_index: Date.now() % 1_000_000,
         updated_at: new Date().toISOString(),
-        updated_by: identity.clientId,
+        updated_by: userId,
       };
       upsertNote(note);
       void insertNote(note);
@@ -376,25 +392,19 @@ export function BoardSurface({ board, initialNotes, initialStrokes, initialVotes
     <div className="flex h-screen w-screen flex-col bg-zinc-100">
       <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-4 py-2">
         <div className="flex items-center gap-3">
-          <span className="font-semibold text-zinc-900">IdeaBoard</span>
+          <a href="/" className="font-semibold text-zinc-900 hover:underline">
+            IdeaBoard
+          </a>
           <span className="text-sm text-zinc-500">/b/{board.slug}</span>
         </div>
-        <div className="flex items-center gap-3">
-          {identity ? (
-            <span className="flex items-center gap-1.5 text-sm text-zinc-600">
-              <span
-                className="inline-block h-2.5 w-2.5 rounded-full"
-                style={{ backgroundColor: identity.color }}
-              />
-              {identity.name}
-            </span>
-          ) : null}
+        <div className="flex items-center gap-4">
           <button
             onClick={copyLink}
             className="rounded-md border border-zinc-300 bg-white px-3 py-1 text-sm hover:bg-zinc-50"
           >
             {copied ? "Copied!" : "Copy share link"}
           </button>
+          <UserMenu name={userName} email={userEmail} avatarUrl={userAvatarUrl} />
         </div>
       </header>
 

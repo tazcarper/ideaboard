@@ -14,6 +14,8 @@ type DragNote = { id: string; originX: number; originY: number };
 
 export function StickyNote({ note }: Props) {
   const tool = useBoardStore((s) => s.tool);
+  const clientId = useBoardStore((s) => s.clientId);
+  const boardId = useBoardStore((s) => s.boardId);
   const patchNote = useBoardStore((s) => s.patchNote);
   const removeNote = useBoardStore((s) => s.removeNote);
   const setDraggingNoteId = useBoardStore((s) => s.setDraggingNoteId);
@@ -21,8 +23,6 @@ export function StickyNote({ note }: Props) {
   const summary = useBoardStore((s) => s.voteSummary[note.id]);
   const myVote = useBoardStore((s) => s.myVote[note.id]);
   const toggleVote = useBoardStore((s) => s.toggleVote);
-  const clientId = useBoardStore((s) => s.clientId);
-  const boardId = useBoardStore((s) => s.boardId);
 
   const dragState = useRef<{
     pointerId: number;
@@ -97,7 +97,7 @@ export function StickyNote({ note }: Props) {
     const stateNotes = useBoardStore.getState().notes;
     for (const n of finished) {
       const cur = stateNotes[n.id];
-      if (cur) void updateNote(n.id, { x: cur.x, y: cur.y });
+      if (cur) void updateNote(n.id, { x: cur.x, y: cur.y }, clientId);
     }
   }
 
@@ -106,7 +106,7 @@ export function StickyNote({ note }: Props) {
     patchNote(note.id, { text });
     if (textTimer.current) clearTimeout(textTimer.current);
     textTimer.current = setTimeout(() => {
-      void updateNote(note.id, { text });
+      void updateNote(note.id, { text }, clientId);
     }, 400);
   }
 
@@ -121,7 +121,7 @@ export function StickyNote({ note }: Props) {
     patchNote(note.id, { text: newText });
     if (textTimer.current) clearTimeout(textTimer.current);
     textTimer.current = setTimeout(() => {
-      void updateNote(note.id, { text: newText });
+      void updateNote(note.id, { text: newText }, clientId);
     }, 400);
     const cursorStart = start + marker.length;
     const cursorEnd = end + marker.length;
@@ -148,7 +148,7 @@ export function StickyNote({ note }: Props) {
       clearTimeout(textTimer.current);
       textTimer.current = null;
     }
-    void updateNote(note.id, { text: note.text });
+    void updateNote(note.id, { text: note.text }, clientId);
   }
 
   function handleVote(value: 1 | -1) {
