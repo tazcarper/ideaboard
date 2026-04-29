@@ -14,6 +14,7 @@ export function BoardCanvas({ width, height }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const strokes = useBoardStore((s) => s.strokes);
   const pendingStroke = useBoardStore((s) => s.pendingStroke);
+  const remotePendingStrokes = useBoardStore((s) => s.remotePendingStrokes);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -31,6 +32,7 @@ export function BoardCanvas({ width, height }: Props) {
 
     const all: Stroke[] = Object.values(strokes);
     if (pendingStroke) all.push(pendingStroke);
+    for (const rs of Object.values(remotePendingStrokes)) all.push(rs);
 
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
@@ -51,7 +53,7 @@ export function BoardCanvas({ width, height }: Props) {
       }
       ctx.stroke();
     }
-  }, [strokes, pendingStroke, width, height]);
+  }, [strokes, pendingStroke, remotePendingStrokes, width, height]);
 
   return (
     <canvas
